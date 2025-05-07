@@ -9,24 +9,22 @@
 
 // ----------------------------------------------------------------------------
 // Extracts "username" and "password" from the POST body.
-// We search for "password=" first (before we ever rewrite the buffer),
-// then we search for "username=" and replace the '&' with '\0'.
+// Searches for password= first so we don't clobber the '&'.
 // ----------------------------------------------------------------------------
 static void parse_form(char *payload, char **out_user, char **out_pass) {
     *out_user = NULL;
     *out_pass = NULL;
 
-    // 1) find password= and set out_pass
+    // find password=
     char *p = strstr(payload, "password=");
     if (p) {
         p += strlen("password=");
         *out_pass = p;
-        // null-terminate at next delimiter if any (e.g., CR, LF, '&')
         char *end = strpbrk(p, "&\r\n");
         if (end) *end = '\0';
     }
 
-    // 2) find username= and set out_user (now safe to null the '&')
+    // find username=
     char *u = strstr(payload, "username=");
     if (u) {
         u += strlen("username=");
@@ -41,18 +39,15 @@ void route(void) {
 
     // ------------------ Register endpoint ------------------
     ROUTE_POST("/register") {
-        // debug: show exactly what we're parsing
         fprintf(stderr,
                 "[DBG] /register payload='%.*s'\n",
                 payload_size, payload);
 
         char *user = NULL, *pass = NULL;
         parse_form(payload, &user, &pass);
-
         fprintf(stderr,
                 "[DBG] parse_form → user='%s' pass='%s'\n",
-                user ? user : "(null)",
-                pass ? pass : "(null)");
+                user?user:"(null)", pass?pass:"(null)");
 
         if (!user || !pass) {
             printf("HTTP/1.1 400 Bad Request\r\n\r\n");
@@ -73,6 +68,57 @@ void route(void) {
         printf("Registered user '%s' successfully.\n", user);
     }
 
+    // ------------------ Login endpoint ------------------
+    ROUTE_POST("/login") {
+        fprintf(stderr,
+                "[DBG] /login payload='%.*s'\n",
+                payload_size, payload);
+
+        char *user = NULL, *pass = NULL;
+        parse_form(payload, &user, &pass);
+        fprintf(stderr,
+                "[DBG] parse_form → user='%s' pass='%s'\n",
+                user?user:"(null)", pass?pass:"(null)");
+
+        if (!user || !pass) {
+            printf("HTTP/1.1 400 Bad Request\r\n\r\n");
+            printf("Error: malformed form data.\n");
+            return;
+        }
+
+        FILE *f = fopen("users.db", "r");
+        if (!f) {
+            printf("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+            printf("Error: cannot open users.db\n");
+            return;
+        }
+
+        char line[BUF_SIZE];
+        int success = 0;
+        while (fgets(line, sizeof(line), f)) {
+            // remove newline
+            line[strcspn(line, "\r\n")] = '\0';
+            char *colon = strchr(line, ':');
+            if (!colon) continue;
+            *colon = '\0';
+            char *fuser = line;
+            char *fpass = colon + 1;
+            if (strcmp(user, fuser) == 0 && strcmp(pass, fpass) == 0) {
+                success = 1;
+                break;
+            }
+        }
+        fclose(f);
+
+        if (success) {
+            printf("HTTP/1.1 200 OK\r\n\r\n");
+            printf("Login successful.\n");
+        } else {
+            printf("HTTP/1.1 401 Unauthorized\r\n\r\n");
+            printf("Login failed.\n");
+        }
+    }
+
     // --------------- Other existing handlers ---------------
     ROUTE_GET("/") {
         printf("HTTP/1.1 200 OK\r\n\r\n");
@@ -84,10 +130,7 @@ void route(void) {
         char buffer[BUF_SIZE];
         ssize_t n;
         while ((n = read(fd, buffer, BUF_SIZE)) > 0) {
-            if (write(STDOUT_FILENO, buffer, n) != n) {
-                fprintf(stderr, "Write error\n");
-                break;
-            }
+            write(STDOUT_FILENO, buffer, n);
         }
         close(fd);
     }
