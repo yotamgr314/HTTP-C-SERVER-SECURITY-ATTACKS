@@ -4,6 +4,9 @@
 # Server executable
 /server
 
+# ignore the database file
+/users.db
+
 # Backup and swap files
 *~
 *.swp

@@ -9,13 +9,9 @@
 
 // ----------------------------------------------------------------------------
 // Extracts "username" and "password" from the POST body.
-// Searches for password= first so we don't clobber the '&'.
 // ----------------------------------------------------------------------------
 static void parse_form(char *payload, char **out_user, char **out_pass) {
-    *out_user = NULL;
-    *out_pass = NULL;
-
-    // find password=
+    *out_user = NULL; *out_pass = NULL;
     char *p = strstr(payload, "password=");
     if (p) {
         p += strlen("password=");
@@ -23,8 +19,6 @@ static void parse_form(char *payload, char **out_user, char **out_pass) {
         char *end = strpbrk(p, "&\r\n");
         if (end) *end = '\0';
     }
-
-    // find username=
     char *u = strstr(payload, "username=");
     if (u) {
         u += strlen("username=");
@@ -39,83 +33,71 @@ void route(void) {
 
     // ------------------ Register endpoint ------------------
     ROUTE_POST("/register") {
-        fprintf(stderr,
-                "[DBG] /register payload='%.*s'\n",
-                payload_size, payload);
-
         char *user = NULL, *pass = NULL;
         parse_form(payload, &user, &pass);
-        fprintf(stderr,
-                "[DBG] parse_form → user='%s' pass='%s'\n",
-                user?user:"(null)", pass?pass:"(null)");
-
         if (!user || !pass) {
             printf("HTTP/1.1 400 Bad Request\r\n\r\n");
             printf("Error: malformed form data.\n");
             return;
         }
-
         FILE *f = fopen("users.db", "a");
         if (!f) {
             printf("HTTP/1.1 500 Internal Server Error\r\n\r\n");
-            printf("Error: could not open users.db for writing.\n");
+            printf("Error writing users.db.\n");
             return;
         }
         fprintf(f, "%s:%s\n", user, pass);
         fclose(f);
-
         printf("HTTP/1.1 200 OK\r\n\r\n");
-        printf("Registered user '%s' successfully.\n", user);
+        printf("Registered user '%s'.\n", user);
     }
 
-    // ------------------ Login endpoint ------------------
+    // ------------------ Vulnerable Login ------------------
     ROUTE_POST("/login") {
+        // We put buffer[64] and immediately after it an int flag
+        struct {
+            char buffer[64];
+            int  authorized;
+        } v = {{0}, 0};
+
+        // UNSAFE: strcpy will overflow into v.authorized if payload >64 bytes
+        strcpy(v.buffer, payload);
+
+        // debug: show first 64 chars and the flag
         fprintf(stderr,
-                "[DBG] /login payload='%.*s'\n",
-                payload_size, payload);
+                "[VULN] buffer='%.64s'  authorized=%d\n",
+                v.buffer, v.authorized);
 
-        char *user = NULL, *pass = NULL;
-        parse_form(payload, &user, &pass);
-        fprintf(stderr,
-                "[DBG] parse_form → user='%s' pass='%s'\n",
-                user?user:"(null)", pass?pass:"(null)");
-
-        if (!user || !pass) {
-            printf("HTTP/1.1 400 Bad Request\r\n\r\n");
-            printf("Error: malformed form data.\n");
-            return;
-        }
-
-        FILE *f = fopen("users.db", "r");
-        if (!f) {
-            printf("HTTP/1.1 500 Internal Server Error\r\n\r\n");
-            printf("Error: cannot open users.db\n");
-            return;
-        }
-
-        char line[BUF_SIZE];
-        int success = 0;
-        while (fgets(line, sizeof(line), f)) {
-            // remove newline
-            line[strcspn(line, "\r\n")] = '\0';
-            char *colon = strchr(line, ':');
-            if (!colon) continue;
-            *colon = '\0';
-            char *fuser = line;
-            char *fpass = colon + 1;
-            if (strcmp(user, fuser) == 0 && strcmp(pass, fpass) == 0) {
-                success = 1;
-                break;
+        // only do the real check if overflow didn't set authorized
+        if (!v.authorized) {
+            char *user = NULL, *pass = NULL;
+            parse_form(v.buffer, &user, &pass);
+            if (user && pass) {
+                FILE *f = fopen("users.db", "r");
+                if (f) {
+                    char line[BUF_SIZE];
+                    while (fgets(line, BUF_SIZE, f)) {
+                        line[strcspn(line, "\r\n")] = '\0';
+                        char *colon = strchr(line, ':');
+                        if (!colon) continue;
+                        *colon = '\0';
+                        if (strcmp(user, line) == 0 &&
+                            strcmp(pass, colon + 1) == 0) {
+                            v.authorized = 1;
+                            break;
+                        }
+                    }
+                    fclose(f);
+                }
             }
         }
-        fclose(f);
 
-        if (success) {
+        if (v.authorized) {
             printf("HTTP/1.1 200 OK\r\n\r\n");
-            printf("Login successful.\n");
+            printf("Login successful (authorized=%d).\n", v.authorized);
         } else {
             printf("HTTP/1.1 401 Unauthorized\r\n\r\n");
-            printf("Login failed.\n");
+            printf("Login failed (authorized=%d).\n", v.authorized);
         }
     }
 
@@ -127,11 +109,10 @@ void route(void) {
             printf("Error: cannot open page1.html\n");
             return;
         }
-        char buffer[BUF_SIZE];
+        char buf[BUF_SIZE];
         ssize_t n;
-        while ((n = read(fd, buffer, BUF_SIZE)) > 0) {
-            write(STDOUT_FILENO, buffer, n);
-        }
+        while ((n = read(fd, buf, BUF_SIZE)) > 0)
+            write(STDOUT_FILENO, buf, n);
         close(fd);
     }
 
