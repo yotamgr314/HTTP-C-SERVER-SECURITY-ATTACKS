@@ -1,0 +1,18 @@
+# Object files
+*.o
+
+# Server executable
+/server
+
+# Backup and swap files
+*~
+*.swp
+*.swo
+
+# Temporary and log files
+*.log
+*.tmp
+
+# IDE directories and OS metadata (optional)
+# .vscode/
+# .DS_Store
