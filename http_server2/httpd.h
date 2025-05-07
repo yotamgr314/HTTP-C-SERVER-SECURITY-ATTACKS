@@ -1,37 +1,31 @@
-#ifndef _HTTPD_H___
-#define _HTTPD_H___
+#ifndef _HTTPD_H_
+#define _HTTPD_H_
 
 #include <string.h>
 #include <stdio.h>
 
-//Server control functions
-
+// Server control
 void serve_forever(const char *PORT);
 
-// Client request
-extern char    *method,    // "GET" or "POST"
-        *uri,       // "/index.html" things before '?'
-        *qs,        // "a=1&b=2"     things after  '?'
-        *prot;      // "HTTP/1.1"
+// Globals set by analyze_http()
+extern char *method, *uri, *qs, *prot;
+extern char *payload;
+extern int   payload_size;
 
-extern char    *payload;     // for POST
-extern int      payload_size;
+// Helpers
+char *request_header(const char *name);
+void analyze_http(char *buf, int rcvd);
 
-char *request_header(const char* name);
-void analyze_http(char* buf,int rcvd);
+// Your router implementation
+void route(void);
 
-// user shall implement this function
-
-void route();
-
-// some interesting macro for `route()`
+// Routing macros
 #define ROUTE_START()       if (0) {
-#define ROUTE(METHOD,URI)   } else if (strcmp(URI,uri)==0&&strcmp(METHOD,method)==0) {
-#define ROUTE_GET(URI)      ROUTE("GET", URI) 
-#define ROUTE_POST(URI)     ROUTE("POST", URI) 
+#define ROUTE(METHOD,URI)   } else if (strcmp(method, METHOD)==0 && strcmp(uri, URI)==0) {
+#define ROUTE_GET(URI)      ROUTE("GET", URI)
+#define ROUTE_POST(URI)     ROUTE("POST", URI)
 #define ROUTE_END()         } else printf(\
                                 "HTTP/1.1 500 Not Handled\r\n\r\n" \
-                                "The server has no handler to the request.\r\n" \
-                            );
+                                "The server has no handler for the request.\r\n");
 
-#endif
+#endif // _HTTPD_H_

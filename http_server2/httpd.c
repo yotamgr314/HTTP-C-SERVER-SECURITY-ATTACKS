@@ -1,148 +1,150 @@
 #include "httpd.h"
-#include <stdio.h>
-#include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 
 #define CONNMAX 1000
+static int listenfd, clients[CONNMAX], clientfd;
 
+// header storage
+typedef struct { char *name, *value; } header_t;
+static header_t reqhdr[17] = { {"\0", "\0"} };
 
-static int listenfd, clients[CONNMAX],clientfd;
-static void error(char *);
-static void startServer(const char *);
+// globals
+char *method, *uri, *qs, *prot;
+char *payload;
+int   payload_size;
+
+static void startServer(const char *port);
 static void respond(int);
 
-
-
-
-void serve_forever(const char *PORT)
-{
+// entry point
+void serve_forever(const char *PORT) {
     struct sockaddr_in clientaddr;
     socklen_t addrlen;
-    char c;    
-    
-    int slot=0;
-    
-    printf(
-            "Server started %shttp://127.0.0.1:%s%s\n",
-            "\033[92m",PORT,"\033[0m"
-            );
+    int slot = 0;
 
-    // Setting all elements to -1: signifies there is no client connected
-    int i;
-    for (i=0; i<CONNMAX; i++)
-        clients[i]=-1;
+    printf("Server started %shttp://127.0.0.1:%s%s\n",
+           "\033[92m", PORT, "\033[0m");
+
+    for (int i = 0; i < CONNMAX; i++) clients[i] = -1;
     startServer(PORT);
-    
-    // Ignore SIGCHLD to avoid zombie threads
-    signal(SIGCHLD,SIG_IGN);
+    signal(SIGCHLD, SIG_IGN);
 
-    // ACCEPT connections
-    while (1)
-    {
+    while (1) {
         addrlen = sizeof(clientaddr);
-        clients[slot] = accept (listenfd, (struct sockaddr *) &clientaddr, &addrlen);
-
-        if (clients[slot]<0)
-        {
+        clients[slot] = accept(listenfd,
+                               (struct sockaddr *)&clientaddr,
+                               &addrlen);
+        if (clients[slot] < 0) {
             perror("accept() error");
-        }
-        else
-        {
-            if ( fork()==0 )
-            {
+        } else {
+            if (fork()==0) {
                 respond(slot);
                 exit(0);
             }
         }
-
-        while (clients[slot]!=-1) slot = (slot+1)%CONNMAX;
+        while (clients[slot] != -1)
+            slot = (slot+1) % CONNMAX;
     }
 }
 
-//start server
-void startServer(const char *port)
-{
+static void startServer(const char *port) {
     struct addrinfo hints, *res, *p;
-
-    // getaddrinfo for host
-    memset (&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
+    memset(&hints,0,sizeof(hints));
+    hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-    if (getaddrinfo( NULL, port, &hints, &res) != 0)
-    {
-        perror ("getaddrinfo() error");
+    hints.ai_flags    = AI_PASSIVE;
+    if (getaddrinfo(NULL, port, &hints, &res)!=0) {
+        perror("getaddrinfo() error");
         exit(1);
     }
-    // socket and bind
-    for (p = res; p!=NULL; p=p->ai_next)
-    {
-        int option = 1;
-        listenfd = socket (p->ai_family, p->ai_socktype, 0);
-        setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option));
-        if (listenfd == -1) continue;
-        if (bind(listenfd, p->ai_addr, p->ai_addrlen) == 0) break;
+    for (p=res; p; p=p->ai_next) {
+        int opt=1;
+        listenfd = socket(p->ai_family,p->ai_socktype,0);
+        setsockopt(listenfd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
+        if (listenfd==-1) continue;
+        if (bind(listenfd,p->ai_addr,p->ai_addrlen)==0) break;
     }
-    if (p==NULL)
-    {
-        perror ("socket() or bind()");
+    if (!p) {
+        perror("socket() or bind()");
         exit(1);
     }
-
     freeaddrinfo(res);
-
-    // listen for incoming connections
-    if ( listen (listenfd, 1000000) != 0 )
-    {
+    if (listen(listenfd,1000000)!=0) {
         perror("listen() error");
         exit(1);
     }
 }
 
-
 static char *buf;
+static void respond(int n) {
+    buf = malloc(65535);
+    int rcvd = recv(clients[n], buf, 65535, 0);
+    if (rcvd>0)       analyze_http(buf, rcvd);
+    // reroute stdout to socket
+    clientfd = clients[n];
+    dup2(clientfd, STDOUT_FILENO);
+    close(clientfd);
+    route();
+    // cleanup
+    fflush(stdout);
+    shutdown(STDOUT_FILENO, SHUT_WR);
+    close(STDOUT_FILENO);
+    shutdown(clientfd, SHUT_RDWR);
+    close(clientfd);
+    clients[n] = -1;
+}
 
-//client connection
-void respond(int n)
-{
+// find header by name
+char *request_header(const char* name) {
+    header_t *h=reqhdr;
+    while(h->name) {
+        if (strcmp(h->name,name)==0) return h->value;
+        h++;
+    }
+    return NULL;
+}
 
-    	int rcvd, fd, bytes_read;
-    	char *ptr;
+void analyze_http(char* buf,int rcvd){
+    buf[rcvd]='\0';
+    // parse request line
+    method = strtok(buf," \t\r\n");
+    uri    = strtok(NULL," \t");
+    prot   = strtok(NULL," \t\r\n");
+    fprintf(stderr,"\x1b[32m + [%s] %s\x1b[0m\n",method,uri);
 
-    	buf = malloc(65535);
-    	rcvd=recv(clients[n], buf, 65535, 0);
-    
-    	if (rcvd<0)    // receive error
-        	fprintf(stderr,("recv() error\n"));
-    	else if (rcvd==0)    // receive socket closed
-        	fprintf(stderr,"Client disconnected unexpectedly.\n");
-    	else  //message received
-        	 analyze_http(buf ,rcvd);
+    // split query string
+    if ((qs = strchr(uri,'?'))) *qs++ = '\0'; else qs = uri-1;
 
-	 // bind clientfd to stdout, making it easier to write
-        clientfd = clients[n];
-        dup2(clientfd, STDOUT_FILENO);
-        close(clientfd);
+    // parse headers
+    header_t *h = reqhdr;
+    while(h<reqhdr+16){
+        char *k=strtok(NULL,"\r\n: \t");
+        if(!k) break;
+        char *v=strtok(NULL,"\r\n");
+        while(*v==' ') v++;
+        h->name=k; h->value=v;
+        fprintf(stderr,"[H] %s: %s\n",k,v);
+        char *t=v+1+strlen(v);
+        if(t[1]=='\r'&&t[2]=='\n') break;
+        h++;
+    }
 
-        // call router
-        route();
+    // content length
+    char *cl = request_header("Content-Length");
+    payload_size = cl?atoi(cl):0;
 
-      // tidy up
-        fflush(stdout);
-        shutdown(STDOUT_FILENO, SHUT_WR);
-        close(STDOUT_FILENO);
+    // locate body
+    char *body = strstr(buf,"\r\n\r\n");
+    payload = body? body+4 : buf+rcvd-payload_size;
 
-    	//Closing SOCKET
-    	shutdown(clientfd, SHUT_RDWR);         //All further send and recieve operations are DISABLED...
-    	close(clientfd);
-    	clients[n]=-1;
+    // debug
+    fprintf(stderr,"[DBG] payload_size=%d, payload='%.*s'\n",
+            payload_size, payload_size, payload);
 }

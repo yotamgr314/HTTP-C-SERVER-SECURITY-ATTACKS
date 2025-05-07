@@ -1,10 +1,6 @@
 #include "httpd.h"
 
-
-
-int main(int c, char** v)
-{
+int main(void) {
     serve_forever("8005");
     return 0;
 }
-

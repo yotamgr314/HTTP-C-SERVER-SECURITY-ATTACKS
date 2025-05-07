@@ -25,6 +25,7 @@ char *request_header(const char* name)
     }
     return NULL;
 }
+
 void analyze_http(char* buf ,int rcvd){
 
 	buf[rcvd] = '\0';
@@ -62,9 +63,15 @@ void analyze_http(char* buf ,int rcvd){
         t2 = request_header("Content-Length"); // and the related header if there is  
         payload_size = t2 ? atol(t2) : (rcvd-(t-buf));
 
-
-	payload = buf+ rcvd-payload_size +1;
-       if (payload_size <100)
-            fprintf(stderr, "[H] %d %s:\n", payload_size  ,payload );
-
+        char *body = strstr(buf, "\r\n\r\n");
+           if (body) {
+               payload = body + 4;
+           } else {
+               // fallback to old calculation
+               payload = buf + rcvd - payload_size;
+          }
+         
+             if (payload_size < 100)
+                 fprintf(stderr, "[H] %d %s\n", payload_size, payload);
+        
 }
